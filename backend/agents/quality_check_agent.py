@@ -150,34 +150,74 @@ class QualityCheckAgent(BaseAgent):
         return total_score, issues
     
     async def _check_technical_specs(self, design: DesignData) -> Tuple[float, List[str]]:
-        """检查技术指标"""
+        """Check actual image file specs using Pillow."""
+        import os
         issues = []
         score = 1.0
-        
+
+        design_id = design.get("design_id", "")
         image_url = design.get("image_url", "")
-        
-        # 检查URL有效性
+
         if not image_url:
             issues.append("Missing image URL")
             return 0.0, issues
-        
-        # 模拟技术检查（实际应下载图片并检查）
-        # 在生产环境中，应该：
-        # 1. 下载图片
-        # 2. 检查实际分辨率
-        # 3. 检查文件大小
-        # 4. 验证格式
-        
-        # Mock检查结果
-        if "mock" in image_url:
-            # Mock图片，给予基本分数
-            score = 0.85
-            self.logger.debug(f"Mock image detected for {design['design_id']}")
-        else:
-            # 真实图片，执行实际检查
-            score = 0.95
-        
-        return score, issues
+
+        # Locate the local file
+        local_file = None
+        agents_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = os.path.dirname(agents_dir)
+
+        if image_url.startswith("/static/"):
+            candidate = os.path.join(backend_dir, image_url.lstrip("/"))
+            if os.path.exists(candidate):
+                local_file = candidate
+        if not local_file and design_id:
+            candidate = os.path.join(backend_dir, "static", "designs", f"{design_id}.png")
+            if os.path.exists(candidate):
+                local_file = candidate
+
+        if not local_file:
+            # Already uploaded to R2 or otherwise unavailable — skip check
+            self.logger.debug(f"Local file not found for {design_id}, skipping technical check")
+            return 0.9, issues
+
+        try:
+            from PIL import Image
+
+            file_size_mb = os.path.getsize(local_file) / (1024 * 1024)
+            if file_size_mb > self.MAX_FILE_SIZE_MB:
+                issues.append(f"File too large: {file_size_mb:.1f}MB (max {self.MAX_FILE_SIZE_MB}MB)")
+                score -= 0.3
+
+            with Image.open(local_file) as img:
+                width, height = img.size
+                mode = img.mode
+
+                if width < self.MIN_RESOLUTION or height < self.MIN_RESOLUTION:
+                    issues.append(
+                        f"Resolution too low: {width}x{height} (min {self.MIN_RESOLUTION}px)"
+                    )
+                    score -= 0.4
+
+                if mode not in ("RGB", "RGBA", "L"):
+                    issues.append(f"Unexpected color mode: {mode} (expected RGB/RGBA)")
+                    score -= 0.1
+
+                ratio = max(width, height) / min(width, height)
+                if ratio > 2.0:
+                    issues.append(f"Unusual aspect ratio: {width}x{height}")
+                    score -= 0.1
+
+            self.logger.info(
+                f"Tech check {design_id}: {width}x{height} {mode} "
+                f"{file_size_mb:.1f}MB → score {score:.2f}"
+            )
+
+        except Exception as e:
+            issues.append(f"Could not inspect image: {e}")
+            score -= 0.2
+
+        return max(0.0, score), issues
     
     async def _check_design_quality_llm(self, design: DesignData) -> Tuple[float, List[str]]:
         """使用LLM评估设计质量"""

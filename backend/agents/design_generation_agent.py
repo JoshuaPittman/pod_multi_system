@@ -266,19 +266,27 @@ Professional quality, ready for commercial use."""
             raise AgentError(self.name, f"Image generation failed: {e}")
     
     async def _maybe_upload_r2(self, local_file: str, design_id: str, fallback_url: str) -> str:
-        """Upload to R2 if configured and not in demo mode. Returns public URL or local fallback."""
+        """Upload to R2 if configured and not in demo mode. Deletes local file on success."""
         if self.demo_mode:
             return fallback_url
         try:
             from utils.r2_uploader import is_r2_configured, upload_to_r2
             if is_r2_configured(self.config):
-                return await upload_to_r2(
+                public_url = await upload_to_r2(
                     local_path=local_file,
                     object_key=f"designs/{design_id}.png",
                     config=self.config,
                 )
+                # Clean up local file now that it's safely in R2
+                try:
+                    import os
+                    os.remove(local_file)
+                    self.logger.info(f"Deleted local file after R2 upload: {local_file}")
+                except OSError as rm_err:
+                    self.logger.warning(f"Could not delete local file {local_file}: {rm_err}")
+                return public_url
         except Exception as e:
-            self.logger.warning(f"R2 upload failed, using local path: {e}")
+            self.logger.warning(f"R2 upload failed, keeping local file: {e}")
         return fallback_url
 
     def _extract_keywords(self, prompt: str, niche: str) -> List[str]:
