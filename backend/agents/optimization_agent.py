@@ -25,6 +25,10 @@ class OptimizationAgent(LLMAgent):
     这个Agent通常在工作流完成后定期运行
     """
     
+    def __init__(self, config: Dict[str, Any] = None):
+        # Haiku is sufficient for recommendations — ~20x cheaper than Sonnet
+        super().__init__(config=config, model="claude-haiku-4-5-20251001")
+
     @property
     def name(self) -> str:
         return "optimization"
@@ -66,8 +70,7 @@ class OptimizationAgent(LLMAgent):
             seo_content=seo_content
         )
         
-        # 计算LLM成本
-        llm_cost = 0.02  # 估算
+        llm_cost = self.llm_cost  # real token cost from invoke_llm
         cost_breakdown = state.get("cost_breakdown", {}).copy()
         cost_breakdown["anthropic"] = cost_breakdown.get("anthropic", 0) + llm_cost
         
@@ -260,8 +263,7 @@ def create_optimization_node(config: Dict[str, Any] = None):
     """创建优化建议节点"""
     agent = OptimizationAgent(config=config)
     
-    def node(state: PODState) -> Dict:
-        import asyncio
-        return asyncio.run(agent(state))
+    async def node(state: PODState) -> Dict:
+        return await agent(state)
     
     return node

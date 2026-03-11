@@ -49,6 +49,10 @@ class SEOOptimizationAgent(LLMAgent):
         }
     }
     
+    def __init__(self, config: Dict[str, Any] = None):
+        # Force Haiku for SEO — copywriting doesn't need Sonnet, ~20x cheaper
+        super().__init__(config=config, model="claude-haiku-4-5-20251001")
+
     @property
     def name(self) -> str:
         return "seo_optimization"
@@ -81,7 +85,7 @@ class SEOOptimizationAgent(LLMAgent):
         self.logger.info(f"Generating SEO content for {len(products)} products")
         
         seo_content = []
-        
+
         # 按设计分组产品
         design_products = {}
         for product in products:
@@ -89,29 +93,24 @@ class SEOOptimizationAgent(LLMAgent):
             if design_id not in design_products:
                 design_products[design_id] = []
             design_products[design_id].append(product)
-        
-        # 为每个设计生成SEO内容
-        for design_id, prods in design_products.items():
-            design = design_map.get(design_id)
-            if not design:
-                continue
-            
-            seo = await self._generate_seo_content(
-                design=design,
-                products=prods,
-                trend_data=trend_data,
-                niche=niche,
-                platforms=platforms
+
+        # Batch all designs into one LLM call
+        designs_to_process = [
+            (design_map[did], prods)
+            for did, prods in design_products.items()
+            if design_map.get(did)
+        ]
+        if designs_to_process:
+            seo_content = await self._generate_seo_content_batch(
+                designs_to_process, trend_data, niche, platforms
             )
-            seo_content.append(seo)
-        
-        # 计算LLM成本
-        llm_cost = len(design_products) * 0.01  # 估算每次调用成本
+
+        llm_cost = self.llm_cost  # real token cost from invoke_llm
         cost_breakdown = state.get("cost_breakdown", {}).copy()
         cost_breakdown["anthropic"] = cost_breakdown.get("anthropic", 0) + llm_cost
         
-        self.logger.info(f"Generated SEO content for {len(seo_content)} designs")
-        
+        self.logger.info(f"Generated SEO content for {len(seo_content)} designs (1 batch call)")
+
         return {
             "seo_content": seo_content,
             "total_cost": state["total_cost"] + llm_cost,
@@ -119,6 +118,88 @@ class SEOOptimizationAgent(LLMAgent):
             "current_step": "seo_optimization_complete"
         }
     
+    async def _generate_seo_content_batch(
+        self,
+        designs_and_products: List[tuple],
+        trend_data: Dict,
+        niche: str,
+        platforms: List[str]
+    ) -> List["SEOData"]:
+        """Generate SEO for all designs in a single LLM call."""
+        primary_platform = platforms[0] if platforms else "etsy"
+        rules = self.PLATFORM_RULES.get(primary_platform, self.PLATFORM_RULES["etsy"])
+        trend_keywords = trend_data.get("keywords", [])
+
+        designs_block = ""
+        for i, (design, prods) in enumerate(designs_and_products):
+            product_types = [p["product_type"] for p in prods]
+            designs_block += f"""
+Design {i+1} (id: {design['design_id']}):
+- Prompt: {design.get('prompt', '')}
+- Style: {design.get('style', '')}
+- Keywords: {', '.join(design.get('keywords', []))}
+- Products: {', '.join(product_types)}
+"""
+
+        prompt = f"""You are a POD Etsy SEO expert. Generate optimized listing content for ALL designs below in ONE response.
+
+Niche: {niche}
+Trending keywords: {', '.join(trend_keywords[:10])}
+Platform rules: title max {rules['title_max_length']} chars, {rules['tags_count']} tags, each tag max {rules['tag_max_length']} chars
+
+{designs_block}
+
+Return a JSON array with one object per design, in order, using this exact structure:
+[
+  {{
+    "design_id": "...",
+    "title": "...",
+    "description": "...",
+    "tags": ["tag1", "tag2", ...],
+    "keywords": ["kw1", "kw2", ...]
+  }},
+  ...
+]
+
+Only return the JSON array. No other text."""
+
+        response = await self.invoke_llm(prompt)
+
+        try:
+            clean = response.strip()
+            if clean.startswith("```"):
+                clean = clean.split("```")[1]
+                if clean.startswith("json"):
+                    clean = clean[4:]
+            data = json.loads(clean.strip())
+
+            results = []
+            for item in data:
+                results.append(SEOData(
+                    design_id=item["design_id"],
+                    title=item.get("title", "")[:rules["title_max_length"]],
+                    description=item.get("description", "")[:rules["description_max_length"]],
+                    tags=[t[:rules["tag_max_length"]] for t in item.get("tags", [])[:rules["tags_count"]]],
+                    keywords=item.get("keywords", []),
+                    optimized_at=datetime.now().isoformat()
+                ))
+            return results
+
+        except (json.JSONDecodeError, KeyError) as e:
+            self.logger.error(f"Failed to parse batch SEO response: {e}")
+            # Fallback: one default entry per design
+            return [
+                SEOData(
+                    design_id=design["design_id"],
+                    title=f"{niche.title()} Design T-Shirt | Unique Gift",
+                    description=f"Perfect {niche} gift. High quality print.",
+                    tags=niche.split()[:rules["tags_count"]],
+                    keywords=niche.split(),
+                    optimized_at=datetime.now().isoformat()
+                )
+                for design, _ in designs_and_products
+            ]
+
     async def _generate_seo_content(
         self,
         design: DesignData,
@@ -252,8 +333,7 @@ def create_seo_optimization_node(config: Dict[str, Any] = None):
     """创建SEO优化节点"""
     agent = SEOOptimizationAgent(config=config)
     
-    def node(state: PODState) -> Dict:
-        import asyncio
-        return asyncio.run(agent(state))
+    async def node(state: PODState) -> Dict:
+        return await agent(state)
     
     return node

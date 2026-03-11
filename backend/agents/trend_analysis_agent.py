@@ -69,10 +69,15 @@ class TrendAnalysisAgent(LLMAgent):
         # 确保只返回用户请求的设计数量（LLM 可能返回更多）
         limited_prompts = design_prompts[:num_designs]
         
+        cost_breakdown = state.get("cost_breakdown", {}).copy()
+        cost_breakdown["anthropic"] = cost_breakdown.get("anthropic", 0) + self.llm_cost
+
         return {
             "trend_data": trend_data,
             "design_prompts": limited_prompts,
-            "current_step": "trend_analysis_complete"
+            "current_step": "trend_analysis_complete",
+            "total_cost": state.get("total_cost", 0) + self.llm_cost,
+            "cost_breakdown": cost_breakdown,
         }
     
     def _build_analysis_prompt(self, niche: str, style: str, num_designs: int) -> str:
@@ -213,8 +218,7 @@ def create_trend_analysis_node(config: Dict[str, Any] = None):
     """创建趋势分析节点"""
     agent = TrendAnalysisAgent(config=config)
     
-    def node(state: PODState) -> Dict:
-        import asyncio
-        return asyncio.run(agent(state))
+    async def node(state: PODState) -> Dict:
+        return await agent(state)
     
     return node

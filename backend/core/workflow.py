@@ -487,7 +487,7 @@ class PODWorkflowRunner:
         """
         self.app = app
     
-    def run(
+    async def run(
         self,
         niche: str,
         style: str,
@@ -498,7 +498,7 @@ class PODWorkflowRunner:
     ) -> Dict[str, Any]:
         """
         运行工作流
-        
+
         Args:
             niche: 利基市场
             style: 设计风格
@@ -506,7 +506,7 @@ class PODWorkflowRunner:
             target_platforms: 目标平台
             product_types: 产品类型
             thread_id: 线程ID（用于恢复）
-        
+
         Returns:
             最终状态
         """
@@ -519,29 +519,29 @@ class PODWorkflowRunner:
             product_types=product_types,
             thread_id=thread_id
         )
-        
+
         # 配置
         config = {"configurable": {"thread_id": initial_state["thread_id"]}}
-        
+
         logger.info(f"Starting workflow for niche: {niche}, thread: {initial_state['thread_id']}")
-        
+
         # 运行工作流
         try:
             final_state = None
-            for event in self.app.stream(initial_state, config):
+            async for event in self.app.astream(initial_state, config):
                 # 处理每个事件
                 for node_name, node_output in event.items():
                     logger.info(f"Completed node: {node_name}")
-            
-            # 获取完整的累积状态（stream 只返回每个节点的增量更新）
+
+            # 获取完整的累积状态（astream 只返回每个节点的增量更新）
             state_snapshot = self.app.get_state(config)
             if state_snapshot and state_snapshot.values:
                 final_state = dict(state_snapshot.values)
                 logger.info(f"Final state has {len(final_state.get('designs', []))} designs, "
                            f"{len(final_state.get('products', []))} products")
-            
+
             return final_state
-            
+
         except Exception as e:
             logger.error(f"Workflow execution failed: {e}")
             raise

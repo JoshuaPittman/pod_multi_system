@@ -65,6 +65,7 @@ class MockupCreationAgent(ToolAgent):
             timeout=60.0
         )
         self.api_key = config.get("printful_api_key") if config else None
+        self.demo_mode = config.get("demo_mode", False) if config else False
     
     @property
     def name(self) -> str:
@@ -134,6 +135,8 @@ class MockupCreationAgent(ToolAgent):
                 product = await self._create_mockup(design, product_type)
                 if product:
                     products.append(product)
+                if not self.demo_mode:
+                    await asyncio.sleep(1.5)  # avoid Printful 429
         
         self.logger.info(f"Created {len(products)} product mockups")
         
@@ -181,13 +184,17 @@ class MockupCreationAgent(ToolAgent):
         调用Printful Mockup Generator API
         如果没有 API Key，则使用本地 Pillow 生成 Mockup
         """
+        # Demo mode: skip Printful entirely, use design image as mockup
+        if self.demo_mode:
+            return image_url
+
         # 优先使用 Printful API（生产环境）
         if self.api_key:
             try:
                 return await self._call_printful_api_internal(image_url, template)
             except Exception as e:
                 self.logger.warning(f"Printful API failed, falling back to local: {e}")
-        
+
         # 后备：使用本地 Pillow 生成 Mockup
         return await self._generate_local_mockup(image_url, template)
     
@@ -312,8 +319,7 @@ def create_mockup_creation_node(config: Dict[str, Any] = None):
     """创建产品合成节点"""
     agent = MockupCreationAgent(config=config)
     
-    def node(state: PODState) -> Dict:
-        import asyncio
-        return asyncio.run(agent(state))
+    async def node(state: PODState) -> Dict:
+        return await agent(state)
     
     return node

@@ -258,9 +258,8 @@ def create_quality_check_node(config: Dict[str, Any] = None):
     """创建质量检查节点"""
     agent = QualityCheckAgent(config=config)
     
-    def node(state: PODState) -> Dict:
-        import asyncio
-        return asyncio.run(agent(state))
+    async def node(state: PODState) -> Dict:
+        return await agent(state)
     
     return node
 

@@ -188,6 +188,12 @@ class LLMAgent(BaseAgent):
     3. 响应解析
     """
     
+    # Cost per million tokens (input, output)
+    MODEL_PRICING = {
+        "claude-sonnet-4-6":        {"input": 3.00,  "output": 15.00},
+        "claude-haiku-4-5-20251001": {"input": 0.80,  "output": 4.00},
+    }
+
     def __init__(
         self,
         config: Optional[Dict[str, Any]] = None,
@@ -200,6 +206,8 @@ class LLMAgent(BaseAgent):
         self.model = model or os.getenv("LLM_MODEL", "claude-haiku-4-5-20251001")
         self.temperature = temperature if temperature is not None else float(os.getenv("LLM_TEMPERATURE", "0.3"))
         self._llm = None
+        self.llm_cost = 0.0        # accumulated real cost this agent instance
+        self.token_usage = {"input": 0, "output": 0}
     
     @property
     def llm(self):
@@ -302,6 +310,22 @@ class LLMAgent(BaseAgent):
             return self._mock_response(prompt)
         
         response = await self.llm.ainvoke(prompt)
+
+        # Track real token usage and cost
+        usage = getattr(response, "usage_metadata", None)
+        if usage:
+            input_tokens  = usage.get("input_tokens",  0)
+            output_tokens = usage.get("output_tokens", 0)
+            self.token_usage["input"]  += input_tokens
+            self.token_usage["output"] += output_tokens
+            pricing = self.MODEL_PRICING.get(self.model, {"input": 3.00, "output": 15.00})
+            call_cost = (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
+            self.llm_cost += call_cost
+            self.logger.info(
+                f"Tokens: {input_tokens} in / {output_tokens} out — "
+                f"call ${call_cost:.4f} | agent total ${self.llm_cost:.4f} [{self.model}]"
+            )
+
         return response.content
     
     def _mock_response(self, prompt: str) -> str:

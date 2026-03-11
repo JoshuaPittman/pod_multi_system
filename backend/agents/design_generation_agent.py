@@ -34,6 +34,7 @@ class DesignGenerationAgent(BaseAgent):
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(config)
         self._openai_client = None
+        self.demo_mode = config.get("demo_mode", False) if config else False
     
     @property
     def name(self) -> str:
@@ -231,12 +232,11 @@ Professional quality, ready for commercial use."""
             # 处理 base64 编码的图片 (gpt-image-1 返回 b64_json)
             if hasattr(image_data, 'b64_json') and image_data.b64_json:
                 self.logger.info(f"Received base64 image data, decoding and saving to {local_file}")
-                # 解码 base64 并保存到文件
                 image_bytes = base64.b64decode(image_data.b64_json)
                 with open(local_file, 'wb') as f:
                     f.write(image_bytes)
                 self.logger.info(f"Image saved to {local_file} ({len(image_bytes)} bytes)")
-                return local_url
+                return await self._maybe_upload_r2(local_file, design_id, local_url)
             
             # 处理 URL 响应 (dall-e-3 可能返回 url)
             elif hasattr(image_data, 'url') and image_data.url:
@@ -249,7 +249,7 @@ Professional quality, ready for commercial use."""
                                 with open(local_file, 'wb') as f:
                                     f.write(await resp.read())
                                 self.logger.info(f"Image downloaded and saved to {local_file}")
-                                return local_url
+                                return await self._maybe_upload_r2(local_file, design_id, local_url)
                             else:
                                 self.logger.warning(f"Failed to download image: HTTP {resp.status}")
                                 return image_data.url
@@ -265,6 +265,22 @@ Professional quality, ready for commercial use."""
             self.logger.error(f"Image API error: {e}")
             raise AgentError(self.name, f"Image generation failed: {e}")
     
+    async def _maybe_upload_r2(self, local_file: str, design_id: str, fallback_url: str) -> str:
+        """Upload to R2 if configured and not in demo mode. Returns public URL or local fallback."""
+        if self.demo_mode:
+            return fallback_url
+        try:
+            from utils.r2_uploader import is_r2_configured, upload_to_r2
+            if is_r2_configured(self.config):
+                return await upload_to_r2(
+                    local_path=local_file,
+                    object_key=f"designs/{design_id}.png",
+                    config=self.config,
+                )
+        except Exception as e:
+            self.logger.warning(f"R2 upload failed, using local path: {e}")
+        return fallback_url
+
     def _extract_keywords(self, prompt: str, niche: str) -> List[str]:
         """从提示词中提取关键词"""
         # 简单的关键词提取
@@ -285,8 +301,7 @@ def create_design_generation_node(config: Dict[str, Any] = None):
     """创建设计生成节点"""
     agent = DesignGenerationAgent(config=config)
     
-    def node(state: PODState) -> Dict:
-        import asyncio
-        return asyncio.run(agent(state))
+    async def node(state: PODState) -> Dict:
+        return await agent(state)
     
     return node

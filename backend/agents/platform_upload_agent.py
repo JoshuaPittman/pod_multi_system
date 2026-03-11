@@ -51,6 +51,7 @@ class PlatformUploadAgent(ToolAgent):
         self.printful_api_key = config.get("printful_api_key") if config else None
         self.etsy_api_key = config.get("etsy_api_key") if config else None
         self.etsy_shop_id = config.get("etsy_shop_id") if config else None
+        self.demo_mode = config.get("demo_mode", False) if config else False
     
     @property
     def name(self) -> str:
@@ -187,19 +188,19 @@ class PlatformUploadAgent(ToolAgent):
             )
     
     async def _upload_to_etsy(
-        self, 
-        products: List[ProductData], 
+        self,
+        products: List[ProductData],
         seo: SEOData
     ) -> str:
         """上传到Etsy"""
-        if not self.etsy_api_key or not self.etsy_shop_id:
-            # Mock响应
+        if self.demo_mode or not self.etsy_api_key or not self.etsy_shop_id:
+            # Demo mode or missing keys — return mock URL
             return f"https://www.etsy.com/listing/{uuid.uuid4().hex[:10]}"
-        
+
         # 实际的Etsy API调用
         # 1. 首先在Printful创建产品
         # 2. 然后同步到Etsy
-        
+
         # 创建Printful同步产品
         sync_product = await self._create_printful_sync_product(products, seo)
         
@@ -276,8 +277,7 @@ def create_platform_upload_node(config: Dict[str, Any] = None):
     """创建平台上传节点"""
     agent = PlatformUploadAgent(config=config)
     
-    def node(state: PODState) -> Dict:
-        import asyncio
-        return asyncio.run(agent(state))
+    async def node(state: PODState) -> Dict:
+        return await agent(state)
     
     return node
